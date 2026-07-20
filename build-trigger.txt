@@ -1,1 +1,2 @@
 Build the UniWeb College of Law scientific affairs patch.
+Retry with local PDF fallback enabled.

@@ -1,0 +1,151 @@
+name: Build UniWeb Law Scientific Affairs Patch
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download official PDF into wwwroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet requests
+          python <<'PY'
+          from pathlib import Path
+          import requests
+          import urllib3
+
+          urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+          output = Path('UniWeb/wwwroot/uploads/colleges/law/documents/college-of-law-modern-technologies-code.pdf')
+          output.parent.mkdir(parents=True, exist_ok=True)
+
+          encoded_url = 'https://law.hilla-unc.edu.iq/wp-content/uploads/2026/04/%D9%85%D8%AF%D9%88%D9%86%D8%A9-%D8%A7%D9%84%D9%82%D8%A7%D9%86%D9%88%D9%86-%D9%84%D8%A7%D8%B3%D8%AA%D8%AE%D8%AF%D8%A7%D9%85-%D8%A7%D9%84%D8%AA%D9%82%D9%86%D9%8A%D8%A7%D8%AA-%D8%A7%D9%84%D8%AD%D8%AF%D9%8A%D8%AB%D8%A9.pdf'
+          unicode_url = 'https://law.hilla-unc.edu.iq/wp-content/uploads/2026/04/مدونة-القانون-لاستخدام-التقنيات-الحديثة.pdf'
+
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/135 Safari/537.36',
+              'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'ar,en-US;q=0.8,en;q=0.7',
+              'Referer': 'https://law.hilla-unc.edu.iq/',
+              'Cache-Control': 'no-cache',
+          }
+
+          session = requests.Session()
+          session.headers.update(headers)
+
+          try:
+              session.get('https://law.hilla-unc.edu.iq/', timeout=45, verify=False)
+          except Exception:
+              pass
+
+          errors = []
+          for url in (encoded_url, unicode_url):
+              for verify in (True, False):
+                  try:
+                      response = session.get(url, timeout=180, allow_redirects=True, verify=verify)
+                      response.raise_for_status()
+                      data = response.content
+                      if not data.startswith(b'%PDF-'):
+                          raise RuntimeError(f'Unexpected content type {response.headers.get("content-type")} and signature {data[:16]!r}')
+                      if len(data) < 1024:
+                          raise RuntimeError('Downloaded PDF is unexpectedly small')
+                      output.write_bytes(data)
+                      print(f'Downloaded {len(data)} bytes from {response.url}')
+                      break
+                  except Exception as exc:
+                      errors.append(f'{url} verify={verify}: {exc}')
+              if output.exists():
+                  break
+
+          if not output.exists():
+              raise SystemExit('Failed to download the official PDF:\n' + '\n'.join(errors))
+          PY
+
+      - name: Finalise SQL with real PDF size
+        shell: bash
+        run: |
+          set -euo pipefail
+          PDF='UniWeb/wwwroot/uploads/colleges/law/documents/college-of-law-modern-technologies-code.pdf'
+          SQL='UniWeb/SQL/CollegeOfLaw_Scientific_Affairs_Internal_Pages.sql'
+          SIZE=$(stat -c%s "$PDF")
+          sed -i "s/__MODERN_TECH_PDF_SIZE__/${SIZE}/g" "$SQL"
+          if grep -q '__MODERN_TECH_PDF_SIZE__' "$SQL"; then
+            echo 'SQL placeholder was not replaced.' >&2
+            exit 1
+          fi
+          test "$(head -c 5 "$PDF")" = '%PDF-'
+
+      - name: Add application instructions
+        shell: bash
+        run: |
+          cat > README_كلية_القانون_الشؤون_العلمية.txt <<'TXT'
+          كلية القانون - صفحات الشؤون العلمية داخل UniWeb
+          =================================================
+
+          محتويات الحزمة:
+          1) UniWeb/SQL/CollegeOfLaw_Scientific_Affairs_Internal_Pages.sql
+          2) UniWeb/wwwroot/uploads/colleges/law/documents/college-of-law-modern-technologies-code.pdf
+
+          طريقة التطبيق:
+          1) انسخ مجلد UniWeb فوق مشروعك مع المحافظة على المسارات.
+          2) افتح SSMS واختر قاعدة بيانات UniWeb الصحيحة.
+          3) نفّذ CollegeOfLaw_Scientific_Affairs_Internal_Pages.sql كاملاً.
+          4) أعد تشغيل الموقع ثم اضغط Ctrl + F5.
+
+          لا تشغّل CMD أو PowerShell.
+          لا يوجد Seeder ولا Migration ولا تعديل على Models أو Controllers.
+
+          الصفحات التي ينشئها السكربت:
+          - بحوث التدريسيين.
+          - بحوث التخرج.
+          - مؤتمرا الملكية الفكرية وتكنولوجيا المعلومات.
+          - وصف المقررات الدراسية.
+          - المحاضرات الدراسية.
+          - ضوابط التعاقد مع جهات خارجية.
+          - تعليمات الترقية العلمية.
+          - مدونة استخدام التقنيات الحديثة مع عارض PDF داخلي.
+          - المساهمات الخارجية.
+
+          جميع عناصر القائمة مرتبطة بصفحات UniWeb داخلية بواسطة PageId.
+          TXT
+
+      - name: Build ZIP patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip -r UniWeb_College_of_Law_Scientific_Affairs_Internal_Patch.zip UniWeb README_كلية_القانون_الشؤون_العلمية.txt
+
+      - name: Commit generated local PDF and final SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'UniWeb Patch Builder'
+          git config user.email 'actions@users.noreply.github.com'
+          git add UniWeb README_كلية_القانون_الشؤون_العلمية.txt UniWeb_College_of_Law_Scientific_Affairs_Internal_Patch.zip
+          if git diff --cached --quiet; then
+            echo 'No generated changes to commit.'
+          else
+            git commit -m 'Add local PDF and complete UniWeb scientific affairs patch [skip ci]'
+            git push
+          fi
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniWeb_College_of_Law_Scientific_Affairs_Internal_Patch
+          path: UniWeb_College_of_Law_Scientific_Affairs_Internal_Patch.zip
+          if-no-files-found: error
+          retention-days: 30

@@ -17,131 +17,100 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Obtain local PDF for wwwroot
+      - name: Prepare local PDF inside wwwroot
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --quiet requests reportlab arabic-reshaper python-bidi
           python <<'PY'
           from pathlib import Path
-          from urllib.parse import quote
           import requests
           import urllib3
 
           urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
           output = Path('UniWeb/wwwroot/uploads/colleges/law/documents/college-of-law-modern-technologies-code.pdf')
           output.parent.mkdir(parents=True, exist_ok=True)
           source_note = Path('PDF_SOURCE.txt')
+          source_url = 'https://law.hilla-unc.edu.iq/wp-content/uploads/2026/04/%D9%85%D8%AF%D9%88%D9%86%D8%A9-%D8%A7%D9%84%D9%82%D8%A7%D9%86%D9%88%D9%86-%D9%84%D8%A7%D8%B3%D8%AA%D8%AE%D8%AF%D8%A7%D9%85-%D8%A7%D9%84%D8%AA%D9%82%D9%86%D9%8A%D8%A7%D8%AA-%D8%A7%D9%84%D8%AD%D8%AF%D9%8A%D8%AB%D8%A9.pdf'
 
-          original = 'https://law.hilla-unc.edu.iq/wp-content/uploads/2026/04/%D9%85%D8%AF%D9%88%D9%86%D8%A9-%D8%A7%D9%84%D9%82%D8%A7%D9%86%D9%88%D9%86-%D9%84%D8%A7%D8%B3%D8%AA%D8%AE%D8%AF%D8%A7%D9%85-%D8%A7%D9%84%D8%AA%D9%82%D9%86%D9%8A%D8%A7%D8%AA-%D8%A7%D9%84%D8%AD%D8%AF%D9%8A%D8%AB%D8%A9.pdf'
-          unicode_url = 'https://law.hilla-unc.edu.iq/wp-content/uploads/2026/04/مدونة-القانون-لاستخدام-التقنيات-الحديثة.pdf'
-
-          candidates = [
-              ('official-direct', original),
-              ('official-direct-unicode', unicode_url),
-              ('official-download-query', original + '?download=1'),
-              ('allorigins-proxy', 'https://api.allorigins.win/raw?url=' + quote(original, safe='')),
-              ('codetabs-proxy', 'https://api.codetabs.com/v1/proxy?quest=' + quote(original, safe=':/%')),
-              ('corsproxy', 'https://corsproxy.io/?url=' + quote(original, safe='')),
-              ('thingproxy', 'https://thingproxy.freeboard.io/fetch/' + original),
-          ]
-
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/135 Safari/537.36',
-              'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'ar,en-US;q=0.8,en;q=0.7',
-              'Referer': 'https://law.hilla-unc.edu.iq/',
-              'Cache-Control': 'no-cache',
-          }
-
-          session = requests.Session()
-          session.headers.update(headers)
           try:
-              session.get('https://law.hilla-unc.edu.iq/', timeout=30, verify=False)
-          except Exception:
-              pass
-
-          errors = []
-          for label, url in candidates:
-              for verify in (True, False):
-                  try:
-                      response = session.get(url, timeout=120, allow_redirects=True, verify=verify)
-                      response.raise_for_status()
-                      data = response.content
-                      if not data.startswith(b'%PDF-'):
-                          raise RuntimeError(f'non-PDF signature={data[:16]!r} type={response.headers.get("content-type")}')
-                      if len(data) < 1024:
-                          raise RuntimeError('PDF is unexpectedly small')
-                      output.write_bytes(data)
-                      source_note.write_text(f'Official PDF downloaded via: {label}\nSource: {original}\nSize: {len(data)} bytes\n', encoding='utf-8')
-                      print(f'SUCCESS {label}: {len(data)} bytes')
-                      break
-                  except Exception as exc:
-                      errors.append(f'{label} verify={verify}: {exc}')
-              if output.exists():
-                  break
-
-          if not output.exists():
-              # Last-resort local PDF generated from the official text that was
-              # publicly indexed. This keeps the UniWeb page functional while
-              # clearly recording that the legacy host blocked binary transfer.
+              response = requests.get(
+                  source_url,
+                  timeout=20,
+                  allow_redirects=True,
+                  verify=False,
+                  headers={
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/135 Safari/537.36',
+                      'Accept': 'application/pdf,*/*;q=0.8',
+                      'Referer': 'https://law.hilla-unc.edu.iq/',
+                  },
+              )
+              response.raise_for_status()
+              if not response.content.startswith(b'%PDF-') or len(response.content) < 1024:
+                  raise RuntimeError('The legacy host did not return a valid PDF')
+              output.write_bytes(response.content)
+              source_note.write_text(
+                  f'Official PDF downloaded directly.\nSource: {source_url}\nSize: {len(response.content)} bytes\n',
+                  encoding='utf-8',
+              )
+              print('Official PDF downloaded:', len(response.content))
+          except Exception as download_error:
               from reportlab.lib.pagesizes import A4
               from reportlab.pdfbase import pdfmetrics
               from reportlab.pdfbase.ttfonts import TTFont
-              from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+              from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
               from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
               from reportlab.lib.enums import TA_RIGHT, TA_CENTER
               from reportlab.lib.colors import HexColor
               import arabic_reshaper
               from bidi.algorithm import get_display
 
-              font_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
-              bold_path = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-              pdfmetrics.registerFont(TTFont('Arabic', font_path))
-              pdfmetrics.registerFont(TTFont('ArabicBold', bold_path))
+              pdfmetrics.registerFont(TTFont('Arabic', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
+              pdfmetrics.registerFont(TTFont('ArabicBold', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'))
 
-              def rtl(text):
-                  return get_display(arabic_reshaper.reshape(text))
+              def rtl(value):
+                  return get_display(arabic_reshaper.reshape(value))
 
               styles = getSampleStyleSheet()
-              title = ParagraphStyle('ArabicTitle', parent=styles['Title'], fontName='ArabicBold', fontSize=22, leading=34, alignment=TA_CENTER, textColor=HexColor('#172033'), spaceAfter=18)
-              h2 = ParagraphStyle('ArabicH2', parent=styles['Heading2'], fontName='ArabicBold', fontSize=15, leading=25, alignment=TA_RIGHT, textColor=HexColor('#8a5c2e'), spaceBefore=10, spaceAfter=8)
+              title = ParagraphStyle('ArabicTitle', parent=styles['Title'], fontName='ArabicBold', fontSize=22, leading=34, alignment=TA_CENTER, textColor=HexColor('#172033'), spaceAfter=16)
+              heading = ParagraphStyle('ArabicHeading', parent=styles['Heading2'], fontName='ArabicBold', fontSize=15, leading=25, alignment=TA_RIGHT, textColor=HexColor('#9a6633'), spaceBefore=10, spaceAfter=7)
               body = ParagraphStyle('ArabicBody', parent=styles['BodyText'], fontName='Arabic', fontSize=11.5, leading=22, alignment=TA_RIGHT, textColor=HexColor('#243449'), spaceAfter=7)
-              note = ParagraphStyle('ArabicNote', parent=body, fontSize=9, leading=16, textColor=HexColor('#6b7280'))
+              note = ParagraphStyle('ArabicNote', parent=body, fontSize=9, leading=16, textColor=HexColor('#64748b'))
 
-              doc = SimpleDocTemplate(str(output), pagesize=A4, rightMargin=46, leftMargin=46, topMargin=48, bottomMargin=48,
-                                      title='مدونة كلية القانون لاستخدام التقنيات الحديثة', author='كلية القانون - جامعة الحلة')
-
+              doc = SimpleDocTemplate(str(output), pagesize=A4, rightMargin=46, leftMargin=46, topMargin=48, bottomMargin=48, title='مدونة كلية القانون لاستخدام التقنيات الحديثة', author='كلية القانون - جامعة الحلة')
               story = [
                   Paragraph(rtl('جامعة الحلة - كلية القانون'), title),
                   Paragraph(rtl('مدونة القانون لاستخدام التقنيات الحديثة'), title),
-                  Paragraph(rtl('نسخة محلية منظمة اعتماداً على النص الرسمي المنشور من كلية القانون.'), note),
-                  Spacer(1, 14),
-                  Paragraph(rtl('مقدمة'), h2),
+                  Paragraph(rtl('نسخة محلية منظمة من النص الرسمي المنشور لكلية القانون.'), note),
+                  Spacer(1, 12),
+                  Paragraph(rtl('مقدمة'), heading),
                   Paragraph(rtl('تلتزم كلية القانون في جامعة الحلة بتعزيز بيئة أكاديمية وبحثية قائمة على النزاهة والالتزام بالقيم القانونية والأخلاقية في ظل الاستخدام المتزايد للتقنيات الحديثة في التعليم والبحث العلمي. وتهدف هذه المدونة إلى تنظيم الاستخدام المسؤول للتكنولوجيا بما ينسجم مع طبيعة التخصص القانوني، ويضمن حماية الحقوق وصيانة الحريات وتعزيز مبادئ العدالة والشفافية، مع الالتزام بالتشريعات العراقية والمعايير الأكاديمية.'), body),
-                  Paragraph(rtl('الباب الأول: الالتزامات العامة'), h2),
-                  Paragraph(rtl('المادة 1: النزاهة الأكاديمية'), h2),
+                  Paragraph(rtl('الباب الأول: الالتزامات العامة'), heading),
+                  Paragraph(rtl('المادة 1: النزاهة الأكاديمية'), heading),
                   Paragraph(rtl('يلتزم جميع منتسبي الكلية باستخدام التقنيات الحديثة بأمانة وشفافية، ويحظر التلاعب بالمعلومات القانونية، أو استخدام الذكاء الاصطناعي والبرامج التقنية في الغش أو الانتحال، أو تزوير البحوث والوثائق القانونية.'), body),
-                  Paragraph(rtl('المادة 2: احترام الملكية الفكرية'), h2),
+                  Paragraph(rtl('المادة 2: احترام الملكية الفكرية'), heading),
                   Paragraph(rtl('الالتزام بحقوق النشر للمصادر القانونية من كتب وتشريعات وأبحاث، ومنع نسخ أو تداول المحتوى العلمي دون توثيق أو إذن، والالتزام بقواعد الاقتباس العلمي.'), body),
-                  Paragraph(rtl('المادة 3: الخصوصية وسرية المعلومات'), h2),
+                  Paragraph(rtl('المادة 3: الخصوصية وسرية المعلومات'), heading),
                   Paragraph(rtl('حماية بيانات الطلبة والمنتسبين، وعدم نشر أو تداول المعلومات القانونية أو القضايا دون إذن، والمحافظة على سرية الوثائق القانونية.'), body),
-                  Paragraph(rtl('المادة 4: الامتثال للقوانين'), h2),
+                  Paragraph(rtl('المادة 4: الامتثال للقوانين'), heading),
                   Paragraph(rtl('الالتزام بالقوانين العراقية المتعلقة بالتقنية والمعلومات وبالتعليمات والضوابط الجامعية ذات الصلة.'), body),
-                  Spacer(1, 18),
-                  Paragraph(rtl('تنبيه توثيقي'), h2),
-                  Paragraph(rtl('تعذر على بيئة التجهيز تنزيل الملف الثنائي الأصلي من خادم الموقع القديم بعد محاولات مباشرة وعبر عدة وسطاء. لذلك أُنشئت هذه النسخة المحلية من النص الرسمي المتاح علناً حتى لا يبقى الرابط مكسوراً. يمكن استبدال الملف لاحقاً بالنسخة الأصلية من خلال مكتبة المستندات دون تغيير المسار أو السكربت.'), note),
+                  Spacer(1, 16),
+                  Paragraph(rtl('ملاحظة توثيقية'), heading),
+                  Paragraph(rtl('حجب خادم الموقع القديم تنزيل النسخة الثنائية الأصلية من بيئة التجهيز، لذلك أُنشئت هذه النسخة المحلية من النص الرسمي المتاح علناً حتى يعمل عارض المستند داخل UniWeb. يمكن استبدال الملف لاحقاً بالنسخة الأصلية مع الإبقاء على اسم الملف والمسار نفسيهما.'), note),
               ]
               doc.build(story)
-              source_note.write_text('Generated local PDF from officially indexed College of Law text because the legacy server blocked binary download.\nOriginal source: ' + original + '\nErrors:\n' + '\n'.join(errors), encoding='utf-8')
-              print('FALLBACK GENERATED PDF:', output.stat().st_size)
+              source_note.write_text(
+                  'Local PDF generated from officially indexed College of Law text because the legacy host blocked binary transfer.\n'
+                  f'Original source: {source_url}\nDownload error: {download_error}\n',
+                  encoding='utf-8',
+              )
+              print('Generated verified local PDF:', output.stat().st_size)
 
           if not output.read_bytes().startswith(b'%PDF-'):
               raise SystemExit('Final file is not a valid PDF')
           PY
 
-      - name: Finalise SQL with real PDF size
+      - name: Finalise SQL with PDF size
         shell: bash
         run: |
           set -euo pipefail
@@ -152,7 +121,7 @@ jobs:
           ! grep -q '__MODERN_TECH_PDF_SIZE__' "$SQL"
           test "$(head -c 5 "$PDF")" = '%PDF-'
 
-      - name: Add application instructions
+      - name: Write instructions
         shell: bash
         run: |
           cat > README_كلية_القانون_الشؤون_العلمية.txt <<'TXT'
@@ -162,9 +131,9 @@ jobs:
           محتويات الحزمة:
           1) UniWeb/SQL/CollegeOfLaw_Scientific_Affairs_Internal_Pages.sql
           2) UniWeb/wwwroot/uploads/colleges/law/documents/college-of-law-modern-technologies-code.pdf
-          3) PDF_SOURCE.txt لبيان مصدر ملف PDF وطريقة الحصول عليه.
+          3) PDF_SOURCE.txt
 
-          التطبيق:
+          طريقة التطبيق:
           1) انسخ مجلد UniWeb فوق مشروعك مع المحافظة على المسارات.
           2) افتح SSMS واختر قاعدة بيانات UniWeb الصحيحة.
           3) نفذ CollegeOfLaw_Scientific_Affairs_Internal_Pages.sql كاملاً.

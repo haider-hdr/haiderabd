@@ -4,7 +4,7 @@
 */
 SET NOCOUNT ON;
 
-DECLARE @CollegeId int, @MenuId int;
+DECLARE @CollegeId int, @MenuId int, @AboutParentId int, @AccreditationMenuItemId int;
 
 SELECT TOP (1) @CollegeId = Id
 FROM dbo.AcademicColleges
@@ -22,6 +22,23 @@ SELECT @MenuId = CustomMenuId
 FROM dbo.AcademicColleges
 WHERE Id = @CollegeId;
 
+SELECT TOP (1) @AboutParentId = Id
+FROM dbo.SiteMenuItems
+WHERE SiteMenuId = @MenuId
+  AND ParentId IS NULL
+  AND IsDeleted = 0
+  AND (TitleAr IN (N'عن الكلية', N'حول الكلية') OR TitleEn IN (N'About the College', N'About'))
+ORDER BY Id;
+
+SELECT TOP (1) @AccreditationMenuItemId = MI.Id
+FROM dbo.SiteMenuItems MI
+INNER JOIN dbo.Pages P ON P.Id = MI.PageId
+WHERE MI.SiteMenuId = @MenuId
+  AND MI.ParentId = @AboutParentId
+  AND MI.IsDeleted = 0
+  AND P.SystemName = N'college_administration_economics_academic_accreditation'
+ORDER BY MI.Id;
+
 PRINT N'1) ملخص الكلية والقائمة';
 SELECT
     C.Id AS CollegeId,
@@ -32,7 +49,9 @@ SELECT
     C.HomePageId,
     C.CustomMenuId,
     M.NameAr AS MenuNameAr,
-    M.SystemName AS MenuSystemName
+    M.SystemName AS MenuSystemName,
+    @AboutParentId AS AboutParentId,
+    @AccreditationMenuItemId AS AccreditationMenuItemId
 FROM dbo.AcademicColleges C
 LEFT JOIN dbo.SiteMenus M ON M.Id = C.CustomMenuId
 WHERE C.Id = @CollegeId;
@@ -118,32 +137,18 @@ PRINT N'6) بنية قائمة عن الكلية';
 ;WITH MenuTree AS
 (
     SELECT
-        MI.Id,
-        MI.ParentId,
-        MI.PageId,
-        MI.TitleAr,
-        MI.TitleEn,
-        MI.Url,
-        MI.DisplayOrder,
-        0 AS MenuLevel,
+        MI.Id, MI.ParentId, MI.PageId, MI.TitleAr, MI.TitleEn, MI.Url,
+        MI.DisplayOrder, 0 AS MenuLevel,
         CAST(RIGHT(N'000000' + CONVERT(nvarchar(6), MI.DisplayOrder), 6) AS nvarchar(400)) AS SortPath
     FROM dbo.SiteMenuItems MI
-    WHERE MI.SiteMenuId = @MenuId
-      AND MI.ParentId IS NULL
+    WHERE MI.Id = @AboutParentId
       AND MI.IsDeleted = 0
-      AND (MI.TitleAr IN (N'عن الكلية', N'حول الكلية') OR MI.TitleEn IN (N'About the College', N'About'))
 
     UNION ALL
 
     SELECT
-        C.Id,
-        C.ParentId,
-        C.PageId,
-        C.TitleAr,
-        C.TitleEn,
-        C.Url,
-        C.DisplayOrder,
-        P.MenuLevel + 1,
+        C.Id, C.ParentId, C.PageId, C.TitleAr, C.TitleEn, C.Url,
+        C.DisplayOrder, P.MenuLevel + 1,
         CAST(P.SortPath + N'/' + RIGHT(N'000000' + CONVERT(nvarchar(6), C.DisplayOrder), 6) AS nvarchar(400))
     FROM dbo.SiteMenuItems C
     INNER JOIN MenuTree P ON P.Id = C.ParentId
@@ -162,7 +167,7 @@ FROM MenuTree MT
 LEFT JOIN dbo.Pages P ON P.Id = MT.PageId
 ORDER BY SortPath;
 
-PRINT N'7) الروابط الخارجية القديمة المتبقية';
+PRINT N'7) الروابط الخارجية القديمة داخل فرع عن الكلية فقط';
 SELECT
     MI.Id,
     MI.TitleAr,
@@ -171,13 +176,18 @@ SELECT
 FROM dbo.SiteMenuItems MI
 WHERE MI.SiteMenuId = @MenuId
   AND MI.IsDeleted = 0
-  AND MI.Url LIKE N'%account.hilla-unc.edu.iq%';
+  AND MI.Url LIKE N'%account.hilla-unc.edu.iq%'
+  AND (MI.ParentId = @AboutParentId OR MI.ParentId = @AccreditationMenuItemId);
 
 PRINT N'8) النتيجة الرقمية النهائية';
 SELECT
     @CollegeId AS CollegeId,
     @MenuId AS MenuId,
-    (SELECT COUNT(*) FROM dbo.Pages WHERE SystemName LIKE N'college_administration_economics_%' AND IsDeleted = 0) AS InternalPages,
+    @AboutParentId AS AboutParentId,
+    (SELECT COUNT(*)
+     FROM dbo.Pages
+     WHERE SystemName LIKE N'college_administration_economics_%'
+       AND IsDeleted = 0) AS InternalPages,
     (SELECT COUNT(*)
      FROM dbo.DocumentFiles
      WHERE AcademicCollegeId = @CollegeId
@@ -187,4 +197,5 @@ SELECT
      FROM dbo.SiteMenuItems
      WHERE SiteMenuId = @MenuId
        AND IsDeleted = 0
-       AND Url LIKE N'%account.hilla-unc.edu.iq%') AS ExternalLinksRemainingInCollegeMenu;
+       AND Url LIKE N'%account.hilla-unc.edu.iq%'
+       AND (ParentId = @AboutParentId OR ParentId = @AccreditationMenuItemId)) AS ExternalLinksRemainingInAboutBranch;
